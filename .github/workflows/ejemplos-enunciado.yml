@@ -1,0 +1,63 @@
+# Fragmentos del enunciado copiados tal cual para comprobar su comportamiento
+name: Ejemplos del enunciado
+
+on:
+  pull_request:
+    paths: ['.github/workflows/ejemplos-enunciado.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  # job.outputs con ::set-output (pag. 6)
+  generate-output:
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.set-output.outputs.result }}
+    steps:
+      - id: set-output
+        run: echo "::set-output name=result::valor_generado"
+
+  use-output:
+    runs-on: ubuntu-latest
+    needs: generate-output
+    steps:
+      - name: Usar la salida del trabajo anterior
+        run: echo "Salida recibida = '${{ needs.generate-output.outputs.result }}'"
+
+  # job.name, strategy.<propiedad> y steps.<id>.conclusion (pags. 6, 8 y 12)
+  otros-contextos:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20]
+        os: [ubuntu-latest]
+    steps:
+      - name: Mostrar informacion de la estrategia
+        run: |
+          echo "job.name              = '${{ job.name }}'"
+          echo "strategy.os           = '${{ strategy.os }}'"
+          echo "strategy.node-version = '${{ strategy.node-version }}'"
+          echo "matrix.node-version   = '${{ matrix.node-version }}'"
+      - id: check-status
+        run: exit 1
+        continue-on-error: true
+      - name: Verificar estado (conclusion, como en el enunciado)
+        if: ${{ steps.check-status.conclusion == 'failure' }}
+        run: echo "El paso anterior fallo."
+      - name: Verificar estado (outcome)
+        if: ${{ steps.check-status.outcome == 'failure' }}
+        run: echo "outcome = failure, conclusion = ${{ steps.check-status.conclusion }}"
+
+  # Contexto jobs desde el workflow que llama (pag. 7)
+  use-reusable:
+    uses: ./.github/workflows/reutilizable.yml
+    with:
+      entorno: prueba
+
+  show-output:
+    runs-on: ubuntu-latest
+    needs: use-reusable
+    steps:
+      - name: Mostrar salida del flujo reutilizable
+        run: echo "Resultado: ${{ jobs.use-reusable.outputs.version }}"
