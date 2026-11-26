@@ -1,0 +1,275 @@
+name: Contextos de GitHub Actions
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # R1: lanzamiento manual con inputs que cambian el comportamiento de los jobs
+  workflow_dispatch:
+    inputs:
+      entorno:
+        description: "Entorno de destino del despliegue simulado"
+        type: choice
+        options: [desarrollo, produccion]
+        default: desarrollo
+      nivel:
+        description: "Nivel de detalle del diagnostico"
+        type: choice
+        options: [basico, detallado]
+        default: basico
+      matriz:
+        description: "Ejecutar la matriz de sistemas operativos"
+        type: boolean
+        default: true
+      mensaje:
+        description: "Mensaje libre (dato no confiable)"
+        type: string
+        default: "Hola desde workflow_dispatch"
+
+# El token del workflow solo puede leer el repositorio
+permissions:
+  contents: read
+
+concurrency:
+  group: contextos-${{ github.ref }}
+  cancel-in-progress: true
+
+# Contexto env, nivel workflow
+env:
+  APP_NAME: contextos-demo
+  ORIGEN: workflow
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # R3. Diagnostico seguro: solo campos no sensibles
+  # ---------------------------------------------------------------------------
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ORIGEN: job            # sobrescribe el valor del workflow
+    outputs:
+      sha_corto: ${{ steps.datos.outputs.sha_corto }}
+    steps:
+      - name: Diagnostico seguro (contextos github, runner y job)
+        id: datos
+        # Los valores entran como variables de entorno: el shell los trata como
+        # datos y nunca como codigo. No se imprimen actor, payload del evento,
+        # token ni secretos (ver README).
+        env:
+          REPO: ${{ github.repository }}
+          EVENTO: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SO: ${{ runner.os }}
+          ARQ: ${{ runner.arch }}
+          ESTADO: ${{ job.status }}
+        run: |
+          echo "github.repository  = $REPO"
+          echo "github.event_name  = $EVENTO"
+          echo "github.ref         = $REF"
+          echo "github.ref_name    = $REF_NAME"
+          echo "github.sha (corto) = ${SHA:0:7}"
+          echo "github.workflow    = $WORKFLOW"
+          echo "github.run_id      = $RUN_ID"
+          echo "github.run_number  = $RUN_NUMBER (intento $RUN_ATTEMPT)"
+          echo "runner.os / arch   = $SO / $ARQ"
+          echo "job.status         = $ESTADO"
+          echo "sha_corto=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Contexto env en tres niveles y contexto vars
+        env:
+          ORIGEN: step         # el nivel mas interno gana
+          EQUIPO: ${{ vars.EQUIPO }}
+        run: |
+          echo "env.APP_NAME = ${{ env.APP_NAME }}"
+          echo "env.ORIGEN   = $ORIGEN"
+          echo "vars.EQUIPO  = ${EQUIPO:-<no definida>}"
+
+      - name: Contexto secrets sin exponer valores
+        env:
+          TIENE_SECRETO: ${{ secrets.DEPLOY_TOKEN != '' }}
+        run: |
+          # A nivel de repositorio no hay DEPLOY_TOKEN: solo existe en los entornos.
+          echo "secrets.DEPLOY_TOKEN definido en este job: $TIENE_SECRETO"
+
+      - name: Contextos job, runner y strategy completos (no contienen secretos)
+        run: |
+          echo '--- job ---';      echo '${{ toJSON(job) }}'
+          echo '--- runner ---';   echo '${{ toJSON(runner) }}'
+          echo '--- strategy ---'; echo '${{ toJSON(strategy) }}'
+          echo "job.name = '${{ job.name }}'"
+
+  # ---------------------------------------------------------------------------
+  # R1. Parametros: los inputs (o el evento) deciden como se comporta el resto
+  # ---------------------------------------------------------------------------
+  parametros:
+    runs-on: ubuntu-latest
+    needs: diagnostico
+    timeout-minutes: 5
+    outputs:
+      entorno: ${{ steps.p.outputs.entorno }}
+      detallado: ${{ steps.p.outputs.detallado }}
+      matriz: ${{ steps.p.outputs.matriz }}
+    steps:
+      - name: Calcular parametros a partir de inputs y evento
+        id: p
+        env:
+          EVENTO: ${{ github.event_name }}
+          IN_ENTORNO: ${{ inputs.entorno }}
+          IN_NIVEL: ${{ inputs.nivel }}
+          IN_MATRIZ: ${{ inputs.matriz }}
+          IN_MENSAJE: ${{ inputs.mensaje }}
+        run: |
+          if [ "$EVENTO" = "workflow_dispatch" ]; then
+            ENTORNO="$IN_ENTORNO"; NIVEL="$IN_NIVEL"; MATRIZ="$IN_MATRIZ"
+            # El mensaje es texto libre: se imprime como dato, nunca se interpola en el script
+            printf 'inputs.mensaje = %s\n' "$IN_MENSAJE"
+          else
+            # push y pull_request no tienen inputs: valores por defecto
+            ENTORNO=desarrollo; NIVEL=basico; MATRIZ=true
+          fi
+          echo "entorno=$ENTORNO" >> "$GITHUB_OUTPUT"
+          echo "detallado=$([ "$NIVEL" = detallado ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "matriz=$MATRIZ" >> "$GITHUB_OUTPUT"
+          echo "Evento $EVENTO -> entorno=$ENTORNO, nivel=$NIVEL, matriz=$MATRIZ"
+
+  # ---------------------------------------------------------------------------
+  # R2. Matriz: condiciones con matrix, strategy y runner.os
+  # ---------------------------------------------------------------------------
+  matriz:
+    needs: [diagnostico, parametros]
+    if: needs.parametros.outputs.matriz == 'true'
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            etiqueta: referencia
+    runs-on: ${{ matrix.os }}
+    name: matriz (${{ matrix.os }})
+    steps:
+      - name: Contextos strategy y matrix
+        shell: bash
+        run: |
+          echo "Combinacion ${{ strategy.job-index }} de ${{ strategy.job-total }} (fail-fast=${{ strategy.fail-fast }})"
+          echo "matrix.os = ${{ matrix.os }} | runner.os = ${{ runner.os }} | etiqueta = '${{ matrix.etiqueta }}'"
+          echo "Commit analizado (needs.diagnostico): ${{ needs.diagnostico.outputs.sha_corto }}"
+
+      - name: Solo en Linux (runner.os)
+        if: runner.os == 'Linux'
+        run: echo "Linux $(uname -r)"
+
+      - name: Solo en Windows (runner.os)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Write-Output "Windows $([System.Environment]::OSVersion.Version)"
+
+      - name: Solo en macOS (matrix.os)
+        if: matrix.os == 'macos-latest'
+        run: echo "macOS $(sw_vers -productVersion)"
+
+      - name: Solo en la combinacion de referencia (matrix.etiqueta)
+        if: matrix.etiqueta == 'referencia'
+        run: echo "Esta combinacion tiene la propiedad extra 'etiqueta' anadida con include"
+
+      - name: Fichero temporal en runner.temp
+        shell: bash
+        run: |
+          echo "Creado en ${{ runner.os }}" > "${{ runner.temp }}/contexto.txt"
+          cat "${{ runner.temp }}/contexto.txt"
+
+      - name: Detalle del runner (solo con nivel detallado)
+        if: needs.parametros.outputs.detallado == 'true'
+        shell: bash
+        run: |
+          echo "runner.name       = ${{ runner.name }}"
+          echo "runner.temp       = ${{ runner.temp }}"
+          echo "runner.tool_cache = ${{ runner.tool_cache }}"
+
+  # ---------------------------------------------------------------------------
+  # Workflow reutilizable: inputs del llamado y outputs via el contexto jobs
+  # ---------------------------------------------------------------------------
+  version:
+    needs: parametros
+    uses: ./.github/workflows/reutilizable.yml
+    with:
+      entorno: ${{ needs.parametros.outputs.entorno }}
+
+  # ---------------------------------------------------------------------------
+  # Despliegue simulado: environment, vars, secrets y steps
+  # ---------------------------------------------------------------------------
+  despliegue:
+    needs: [parametros, matriz, version]
+    # R2: no se despliega desde un pull request. always() hace falta porque
+    # matriz puede haberse saltado (input matriz=false).
+    if: >-
+      always() && github.event_name != 'pull_request' &&
+      needs.parametros.result == 'success' && needs.version.result == 'success' &&
+      needs.matriz.result != 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ needs.parametros.outputs.entorno }}
+    steps:
+      - name: Despliegue simulado
+        env:
+          ENTORNO: ${{ needs.parametros.outputs.entorno }}
+          VERSION: ${{ needs.version.outputs.version }}
+          API_ENDPOINT: ${{ vars.API_ENDPOINT }}
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$DEPLOY_TOKEN" ]; then
+            echo "::error::Falta el secreto DEPLOY_TOKEN en el entorno $ENTORNO"; exit 1
+          fi
+          echo "Desplegando $APP_NAME $VERSION en '$ENTORNO' contra $API_ENDPOINT"
+          # Uso real (no se ejecuta): curl -H "Authorization: Bearer $DEPLOY_TOKEN" ...
+          echo "Token de despliegue disponible: si (valor no mostrado)"
+
+      - name: Comprobar el endpoint (puede fallar sin cortar el job)
+        id: salud
+        continue-on-error: true
+        env:
+          API_ENDPOINT: ${{ vars.API_ENDPOINT }}
+        run: curl -sS --max-time 10 "$API_ENDPOINT/health"
+
+      - name: Contexto steps (outcome frente a conclusion)
+        if: always()
+        run: |
+          echo "steps.salud.outcome    = ${{ steps.salud.outcome }}"
+          echo "steps.salud.conclusion = ${{ steps.salud.conclusion }}"
+
+      - name: Aviso si el endpoint no responde
+        if: steps.salud.outcome == 'failure'
+        run: echo "::warning::El endpoint de ${{ needs.parametros.outputs.entorno }} no responde (simulado)"
+
+  # ---------------------------------------------------------------------------
+  # Resumen: contexto needs con el resultado de cada job
+  # ---------------------------------------------------------------------------
+  resumen:
+    needs: [diagnostico, parametros, matriz, version, despliegue]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resultado de cada job (needs.<job>.result)
+        run: |
+          {
+            echo "### Ejecucion ${{ github.run_number }} (${{ github.event_name }})"
+            echo "| Job | Resultado |"
+            echo "|---|---|"
+            echo "| diagnostico | ${{ needs.diagnostico.result }} |"
+            echo "| parametros | ${{ needs.parametros.result }} |"
+            echo "| matriz | ${{ needs.matriz.result }} |"
+            echo "| version | ${{ needs.version.result }} |"
+            echo "| despliegue | ${{ needs.despliegue.result }} |"
+            echo ""
+            echo "Entorno: ${{ needs.parametros.outputs.entorno || 'n/a' }} - version: ${{ needs.version.outputs.version || 'n/a' }}"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

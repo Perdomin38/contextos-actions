@@ -1,0 +1,33 @@
+name: Version (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      entorno:
+        description: "Entorno para el que se genera la version"
+        required: true
+        type: string
+    outputs:
+      version:
+        description: "Etiqueta de version generada"
+        # El contexto jobs solo existe aqui: outputs de un workflow reutilizable
+        value: ${{ jobs.generar.outputs.version }}
+
+jobs:
+  generar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Generar version a partir de inputs y github
+        id: v
+        env:
+          ENTORNO: ${{ inputs.entorno }}
+          SHA: ${{ github.sha }}
+          NUM: ${{ github.run_number }}
+        run: |
+          VERSION="1.0.${NUM}-${ENTORNO}+${SHA:0:7}"
+          echo "inputs.entorno = $ENTORNO"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version generada: $VERSION"
