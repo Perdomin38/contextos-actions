@@ -31,9 +31,11 @@ on:
 permissions:
   contents: read
 
+# Un push nuevo cancela el anterior de la misma rama, pero los lanzamientos
+# manuales tienen su propio grupo y nunca se cancelan entre si.
 concurrency:
-  group: contextos-${{ github.ref }}
-  cancel-in-progress: true
+  group: contextos-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 # Contexto env, nivel workflow
 env:
@@ -82,6 +84,18 @@ jobs:
           echo "runner.os / arch   = $SO / $ARQ"
           echo "job.status         = $ESTADO"
           echo "sha_corto=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      # R2: paso que solo existe en pull requests
+      - name: Datos del pull request (solo en pull_request)
+        if: github.event_name == 'pull_request'
+        env:
+          NUMERO: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.base_ref }}
+          # El nombre de la rama lo elige quien abre el PR: dato no confiable
+          RAMA: ${{ github.head_ref }}
+        run: |
+          echo "pull_request #$NUMERO: $RAMA -> $BASE"
+          echo "github.ref = ${{ github.ref }} (rama de merge temporal)"
 
       - name: Contexto env en tres niveles y contexto vars
         env:
