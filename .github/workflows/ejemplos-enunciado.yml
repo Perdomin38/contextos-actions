@@ -49,7 +49,7 @@ jobs:
         if: ${{ steps.check-status.outcome == 'failure' }}
         run: echo "outcome = failure, conclusion = ${{ steps.check-status.conclusion }}"
 
-  # Contexto jobs desde el workflow que llama (pag. 7): no es valido aqui, se usa needs
+  # Contexto jobs desde el workflow que llama (pag. 7)
   use-reusable:
     uses: ./.github/workflows/reutilizable.yml
     with:
@@ -60,4 +60,6 @@ jobs:
     needs: use-reusable
     steps:
       - name: Mostrar salida del flujo reutilizable
-        run: echo "Resultado: ${{ needs.use-reusable.outputs.version }}"
+        # "Resultado: " sin comillas rompe el YAML (": " dentro de un escalar plano)
+        run: |
+          echo "Resultado: ${{ jobs.use-reusable.outputs.version }}"
